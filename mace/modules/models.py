@@ -26,6 +26,7 @@ from .blocks import (
     NonLinearReadoutBlock,
     RadialEmbeddingBlock,
     ScaleShiftBlock,
+    CoordUpdateBlock,
 )
 from .utils import (
     compute_fixed_charge_dipole,
@@ -132,8 +133,15 @@ class MACE(torch.nn.Module):
 
         self.readouts = torch.nn.ModuleList()
         self.readouts.append(LinearReadoutBlock(hidden_irreps))
+        
+        # Coord_update
+        # 
+
+        self.coord_interaction = torch.nn.ModuleList([])
 
         for i in range(num_interactions - 1):
+            print("MACE init layer:", i, num_interactions)
+            
             if i == num_interactions - 2:
                 hidden_irreps_out = str(
                     hidden_irreps[0]
@@ -165,6 +173,24 @@ class MACE(torch.nn.Module):
                 )
             else:
                 self.readouts.append(LinearReadoutBlock(hidden_irreps))
+                
+            if i == num_interactions - 2:
+                continue
+                
+            else:
+                coord_inter = CoordUpdateBlock(
+                    node_attrs_irreps=node_attr_irreps,
+                    node_feats_irreps=hidden_irreps_out, # node_feats_irreps,
+                    edge_attrs_irreps=sh_irreps,
+                    edge_feats_irreps=edge_feats_irreps,
+                    target_irreps=interaction_irreps,
+                    hidden_irreps=hidden_irreps_out,
+                    avg_num_neighbors=avg_num_neighbors,
+                    radial_MLP=radial_MLP,
+                )
+                self.coord_interaction.append(coord_inter)
+        
+
 
     def forward(
         self,
@@ -230,8 +256,10 @@ class MACE(torch.nn.Module):
         energies = [e0, pair_energy]
         node_energies_list = [node_e0, pair_node_energy]
         node_feats_list = []
-        for interaction, product, readout in zip(
-            self.interactions, self.products, self.readouts
+        
+        coord_updates_list = []
+        for interaction, product, readout, coord_interaction in zip(
+            self.interactions, self.products, self.readouts, self.coord_interaction
         ):
             node_feats, sc = interaction(
                 node_attrs=data["node_attrs"],
@@ -239,28 +267,42 @@ class MACE(torch.nn.Module):
                 edge_attrs=edge_attrs,
                 edge_feats=edge_feats,
                 edge_index=data["edge_index"],
-            )
+            )            
             node_feats = product(
                 node_feats=node_feats,
                 sc=sc,
                 node_attrs=data["node_attrs"],
             )
             node_feats_list.append(node_feats)
+            
+
+            
             node_energies = readout(node_feats).squeeze(-1)  # [n_nodes, ]
             energy = scatter_sum(
                 src=node_energies, index=data["batch"], dim=-1, dim_size=num_graphs
             )  # [n_graphs,]
             energies.append(energy)
             node_energies_list.append(node_energies)
+            
+            coord_updates = coord_interaction(
+                node_attrs=data["node_attrs"],
+                node_feats=node_feats,
+                edge_attrs=edge_attrs,
+                edge_feats=edge_feats,
+                edge_index=data["edge_index"],
+            )
+            coord_updates_list.append(coord_updates)
 
         # Concatenate node features
         node_feats_out = torch.cat(node_feats_list, dim=-1)
+        coord_updates_out = torch.stack(coord_updates_list, dim=-1)
 
         # Sum over energy contributions
         contributions = torch.stack(energies, dim=-1)
         total_energy = torch.sum(contributions, dim=-1)  # [n_graphs, ]
         node_energy_contributions = torch.stack(node_energies_list, dim=-1)
         node_energy = torch.sum(node_energy_contributions, dim=-1)  # [n_nodes, ]
+        coord_updates_out = torch.sum(coord_updates_out, dim=-1)  # [n_nodes, ]
 
         # Outputs
         forces, virials, stress, hessian = get_outputs(
@@ -274,6 +316,7 @@ class MACE(torch.nn.Module):
             compute_stress=compute_stress,
             compute_hessian=compute_hessian,
         )
+    
 
         return {
             "energy": total_energy,
@@ -285,6 +328,7 @@ class MACE(torch.nn.Module):
             "displacement": displacement,
             "hessian": hessian,
             "node_feats": node_feats_out,
+            "coord_updates": coord_updates_out,
         }
 
 

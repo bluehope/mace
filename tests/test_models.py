@@ -93,6 +93,8 @@ def test_mace():
     output2 = model_compiled(batch.to_dict(), training=True)
     assert torch.allclose(output1["energy"][0], output2["energy"][0])
     assert torch.allclose(output2["energy"][0], output2["energy"][1])
+    
+    print("outputs", output1.keys())
 
 
 def test_dipole_mace():
@@ -196,3 +198,10 @@ def test_energy_dipole_mace():
         np.array(rot @ output["dipole"][0].detach().numpy()),
         output["dipole"][1].detach().numpy(),
     )
+
+# main function
+
+if __name__ == "__main__":
+    test_mace()
+    test_dipole_mace()
+    test_energy_dipole_mace()

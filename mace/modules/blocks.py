@@ -800,7 +800,8 @@ class CoordUpdateBlock(InteractionBlock):
         edge_feats: torch.Tensor,
         edge_index: torch.Tensor,
     ) -> torch.Tensor:
-        sender, receiver = edge_index
+        sender = edge_index[0]
+        receiver = edge_index[1]
         
         # 가중치 계산 및 적용 과정에서의 문제 확인
         tp_weights = self.conv_tp_weights(edge_feats)
