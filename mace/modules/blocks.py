@@ -738,6 +738,91 @@ class RealAgnosticAttResidualInteractionBlock(InteractionBlock):
         )  # [n_nodes, channels, (lmax + 1)**2]
 
 
+###########################################################################################
+    
+@compile_mode("script")
+class CoordUpdateBlock(InteractionBlock):
+    def __init__(
+        self,
+        node_attrs_irreps: o3.Irreps,
+        node_feats_irreps: o3.Irreps,
+        edge_attrs_irreps: o3.Irreps,
+        edge_feats_irreps: o3.Irreps,
+        target_irreps: o3.Irreps,
+        hidden_irreps: o3.Irreps,
+        avg_num_neighbors: float,
+        radial_MLP: Optional[List[int]] = None
+    ):
+        super().__init__(
+            node_attrs_irreps,
+            node_feats_irreps,
+            edge_attrs_irreps,
+            edge_feats_irreps,
+            target_irreps,
+            hidden_irreps,
+            avg_num_neighbors,
+            radial_MLP
+        )
+
+    def _setup(self) -> None:
+        # TensorProduct to combine node features and edge attributes
+        irreps_mid, instructions = tp_out_irreps_with_instructions(
+            self.node_feats_irreps, self.edge_attrs_irreps, self.target_irreps
+        )
+        self.conv_tp = o3.TensorProduct(
+            self.node_feats_irreps,
+            self.edge_attrs_irreps,
+            irreps_mid,
+            instructions=instructions,
+            shared_weights=False,
+            internal_weights=False,
+        )
+        
+        # Convolution weights
+        input_dim = self.edge_feats_irreps.num_irreps
+        self.conv_tp_weights = nn.FullyConnectedNet(
+            [input_dim] + self.radial_MLP + [self.conv_tp.weight_numel],
+            torch.nn.functional.silu,
+        )
+        
+        # Linear layer to project to coordinate space (3D vectors)
+        self.to_coords = o3.Linear(
+            irreps_mid,
+            o3.Irreps("1x1o"),  # 1o represents a 3D vector
+            internal_weights=True,
+            shared_weights=True,
+        )
+
+    def forward(
+        self,
+        node_attrs: torch.Tensor,
+        node_feats: torch.Tensor,
+        edge_attrs: torch.Tensor,
+        edge_feats: torch.Tensor,
+        edge_index: torch.Tensor,
+    ) -> torch.Tensor:
+        sender, receiver = edge_index
+        
+        # Compute convolution weights
+        tp_weights = self.conv_tp_weights(edge_feats)
+        
+        # Combine node features and edge attributes
+        mji = self.conv_tp(
+            node_feats[sender], edge_attrs, tp_weights
+        )  # [n_edges, irreps]
+        
+        # Sum updates for each node
+        message = scatter_sum(
+            src=mji, index=receiver, dim=0, dim_size=node_feats.shape[0]
+        )  # [n_nodes, irreps]
+        
+        # Project to coordinate space
+        coord_updates = self.to_coords(message) / self.avg_num_neighbors
+        
+        return coord_updates
+
+###########################################################################################
+
 @compile_mode("script")
 class ScaleShiftBlock(torch.nn.Module):
     def __init__(self, scale: float, shift: float):
@@ -756,3 +841,5 @@ class ScaleShiftBlock(torch.nn.Module):
         return (
             f"{self.__class__.__name__}(scale={self.scale:.6f}, shift={self.shift:.6f})"
         )
+
+
