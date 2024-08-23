@@ -817,6 +817,15 @@ class CoordUpdateBlock(InteractionBlock):
         coord_updates = coord_updates # / self.avg_num_neighbors
         
         return coord_updates
+    
+@compile_mode("script")
+class SpeciesPredictionBlock(torch.nn.Module):
+    def __init__(self, input_irreps, embedding_dim):
+        super().__init__()
+        self.transform = o3.Linear(input_irreps, o3.Irreps(f"{embedding_dim}x0e"))
+        
+    def forward(self, x):
+        return self.transform(x)
 
 ###########################################################################################
 

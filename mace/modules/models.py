@@ -27,6 +27,7 @@ from .blocks import (
     RadialEmbeddingBlock,
     ScaleShiftBlock,
     CoordUpdateBlock,
+    SpeciesPredictionBlock,
 )
 from .utils import (
     compute_fixed_charge_dipole,
@@ -137,7 +138,9 @@ class MACE(torch.nn.Module):
         # Coord_update
         # 
 
-        self.coord_interaction = torch.nn.ModuleList([])
+        self.coord_interactions = torch.nn.ModuleList([])
+        self.species_interactions = torch.nn.ModuleList([])
+        self.element_embedding_dim = hidden_irreps.count(o3.Irrep(0, 1))
 
         for i in range(num_interactions - 1):
             print("MACE init layer:", i, num_interactions)
@@ -178,6 +181,7 @@ class MACE(torch.nn.Module):
                 continue
                 
             else:
+                # Coord_update
                 coord_inter = CoordUpdateBlock(
                     node_attrs_irreps=node_attr_irreps,
                     node_feats_irreps=hidden_irreps_out, # node_feats_irreps,
@@ -188,7 +192,11 @@ class MACE(torch.nn.Module):
                     avg_num_neighbors=avg_num_neighbors,
                     radial_MLP=radial_MLP,
                 )
-                self.coord_interaction.append(coord_inter)
+                self.coord_interactions.append(coord_inter)
+                
+                # (Species prediction)
+                species_inter = SpeciesPredictionBlock(hidden_irreps, self.element_embedding_dim)
+                self.species_interactions.append(species_inter)
         
 
 
@@ -258,8 +266,9 @@ class MACE(torch.nn.Module):
         node_feats_list = []
         
         coord_updates_list = []
-        for interaction, product, readout, coord_interaction in zip(
-            self.interactions, self.products, self.readouts, self.coord_interaction
+        speices_updates_list = []
+        for interaction, product, readout, coord_interaction, species_interaction in zip(
+            self.interactions, self.products, self.readouts, self.coord_interactions, self.species_interactions
         ):
             node_feats, sc = interaction(
                 node_attrs=data["node_attrs"],
@@ -284,18 +293,24 @@ class MACE(torch.nn.Module):
             energies.append(energy)
             node_energies_list.append(node_energies)
             
-            coord_updates = coord_interaction(
+            coord_update = coord_interaction(
                 node_attrs=data["node_attrs"],
                 node_feats=node_feats,
                 edge_attrs=edge_attrs,
                 edge_feats=edge_feats,
                 edge_index=data["edge_index"],
             )
-            coord_updates_list.append(coord_updates)
+            coord_updates_list.append(coord_update)
+            
+            speices_update = species_interaction(node_feats)
+            speices_updates_list.append(speices_update)
 
         # Concatenate node features
         node_feats_out = torch.cat(node_feats_list, dim=-1)
+        
+        # Concatenate coord species updates
         coord_updates_out = torch.stack(coord_updates_list, dim=-1)
+        speices_updates_out = torch.stack(speices_updates_list, dim=-1)
 
         # Sum over energy contributions
         contributions = torch.stack(energies, dim=-1)
@@ -303,6 +318,7 @@ class MACE(torch.nn.Module):
         node_energy_contributions = torch.stack(node_energies_list, dim=-1)
         node_energy = torch.sum(node_energy_contributions, dim=-1)  # [n_nodes, ]
         coord_updates_out = torch.sum(coord_updates_out, dim=-1)  # [n_nodes, ]
+        speices_updates_out = torch.sum(speices_updates_out, dim=-1)  # [n_nodes, ]
 
         # Outputs
         forces, virials, stress, hessian = get_outputs(
@@ -329,6 +345,7 @@ class MACE(torch.nn.Module):
             "hessian": hessian,
             "node_feats": node_feats_out,
             "coord_updates": coord_updates_out,
+            "speices_updates_out" : speices_updates_out,
         }
 
 
