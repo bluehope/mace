@@ -209,6 +209,8 @@ class MACE(torch.nn.Module):
         compute_stress: bool = False,
         compute_displacement: bool = False,
         compute_hessian: bool = False,
+        compute_coord_update : bool = False,
+        compute_species_update : bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
         # Setup
         data["node_attrs"].requires_grad_(True)
@@ -293,32 +295,42 @@ class MACE(torch.nn.Module):
             energies.append(energy)
             node_energies_list.append(node_energies)
             
-            coord_update = coord_interaction(
-                node_attrs=data["node_attrs"],
-                node_feats=node_feats,
-                edge_attrs=edge_attrs,
-                edge_feats=edge_feats,
-                edge_index=data["edge_index"],
-            )
-            coord_updates_list.append(coord_update)
+            if compute_species_update:
             
-            speices_update = species_interaction(node_feats)
-            speices_updates_list.append(speices_update)
+                coord_update = coord_interaction(
+                    node_attrs=data["node_attrs"],
+                    node_feats=node_feats,
+                    edge_attrs=edge_attrs,
+                    edge_feats=edge_feats,
+                    edge_index=data["edge_index"],
+                )
+                coord_updates_list.append(coord_update)
+            
+            if compute_species_update:
+                
+                speices_update = species_interaction(node_feats)
+                speices_updates_list.append(speices_update)
 
         # Concatenate node features
         node_feats_out = torch.cat(node_feats_list, dim=-1)
         
-        # Concatenate coord species updates
-        coord_updates_out = torch.stack(coord_updates_list, dim=-1)
-        speices_updates_out = torch.stack(speices_updates_list, dim=-1)
-
+        
         # Sum over energy contributions
         contributions = torch.stack(energies, dim=-1)
         total_energy = torch.sum(contributions, dim=-1)  # [n_graphs, ]
         node_energy_contributions = torch.stack(node_energies_list, dim=-1)
         node_energy = torch.sum(node_energy_contributions, dim=-1)  # [n_nodes, ]
-        coord_updates_out = torch.sum(coord_updates_out, dim=-1)  # [n_nodes, ]
-        speices_updates_out = torch.sum(speices_updates_out, dim=-1)  # [n_nodes, ]
+        
+        # Concatenate coord species updates
+        coord_updates_out = torch.zeros_like(data["positions"])
+        if compute_coord_update:
+            coord_updates_out = torch.stack(coord_updates_list, dim=-1)
+            coord_updates_out = torch.sum(coord_updates_out, dim=-1)  # [n_nodes, ]
+            
+        speices_updates_out = torch.zeros_like(data["node_attrs"])
+        if compute_species_update:
+            speices_updates_out = torch.stack(speices_updates_list, dim=-1)
+            speices_updates_out = torch.sum(speices_updates_out, dim=-1)  # [n_nodes, ]
 
         # Outputs
         forces, virials, stress, hessian = get_outputs(
@@ -345,7 +357,7 @@ class MACE(torch.nn.Module):
             "hessian": hessian,
             "node_feats": node_feats_out,
             "coord_updates": coord_updates_out,
-            "speices_updates_out" : speices_updates_out,
+            "species_updates": speices_updates_out,
         }
 
 
