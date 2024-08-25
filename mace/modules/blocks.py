@@ -820,12 +820,16 @@ class CoordUpdateBlock(InteractionBlock):
     
 @compile_mode("script")
 class SpeciesPredictionBlock(torch.nn.Module):
-    def __init__(self, input_irreps, embedding_dim):
+    def __init__(self, input_irreps, embedding_dim, num_species):
         super().__init__()
         self.transform = o3.Linear(input_irreps, o3.Irreps(f"{embedding_dim}x0e"))
         
+        # Transfrom to species one-hot
+        self.species = torch.nn.Linear(embedding_dim, num_species)
+        
     def forward(self, x):
-        return self.transform(x)
+        x = self.transform(x)
+        return self.species(x)
 
 ###########################################################################################
 
